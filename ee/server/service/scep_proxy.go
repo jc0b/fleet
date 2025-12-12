@@ -447,17 +447,37 @@ func (s *SCEPConfigService) GetNDESSCEPChallenge(ctx context.Context, proxy flee
 			"unexpected status code: %d; could not retrieve the enrollment challenge password; invalid admin URL or credentials; please correct and try again",
 			resp.StatusCode)})
 	}
-	// Make a transformer that converts MS-Win default to UTF8:
-	win16le := unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM)
-	// Make a transformer that is like win16le, but abides by BOM:
-	utf16bom := unicode.BOMOverride(win16le.NewDecoder())
 
-	// Make a Reader that uses utf16bom:
-	unicodeReader := transform.NewReader(resp.Body, utf16bom)
-	bodyText, err := io.ReadAll(unicodeReader)
+	responseBodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", ctxerr.Wrap(ctx, err, "reading response body")
 	}
+
+	var bodyText []byte
+	if len(responseBodyBytes) >= 2 && responseBodyBytes[0] == 0xFF && responseBodyBytes[1] == 0xFE {
+		// data is UTF-16, little endian
+		// Make a transformer that converts MS-Win default to UTF8:
+		win16le := unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM)
+		// Make a transformer that is like win16le, but abides by BOM:
+		utf16bom := unicode.BOMOverride(win16le.NewDecoder())
+
+		bytesReader := bytes.NewReader(responseBodyBytes)
+		// Make a Reader that uses utf16bom:
+		unicodeReader := transform.NewReader(bytesReader, utf16bom)
+		bodyText, err = io.ReadAll(unicodeReader)
+		if err != nil {
+			return "", ctxerr.Wrap(ctx, err, "reading response body")
+		}
+	} else if len(responseBodyBytes) >= 3 && responseBodyBytes[0] == 0xEF && responseBodyBytes[1] == 0xBB && responseBodyBytes[2] == 0xBF {
+		bytesReader := bytes.NewReader(responseBodyBytes)
+		bodyText, err = io.ReadAll(bytesReader)
+		if err != nil {
+			return "", ctxerr.Wrap(ctx, err, "reading response body")
+		}
+	} else {
+		return "", ctxerr.Wrap(ctx, err, "unexpected response body encoding")
+	}
+
 	htmlString := string(bodyText)
 
 	matches := challengeRegex.FindStringSubmatch(htmlString)
